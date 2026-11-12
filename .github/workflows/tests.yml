@@ -34,7 +34,7 @@ jobs:
 
       - name: Test with pytest
         run: |
-          pytest -n auto --dist loadscope --cov=./ --cov-report=xml --durations=30
+          pytest -n auto --dist load --cov=./ --cov-report=xml --durations=30
           codecov
 #      - name: Coveralls
 #        env:
