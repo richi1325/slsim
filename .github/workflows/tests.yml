@@ -11,6 +11,11 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
     strategy:
       matrix:
         python-version: ["3.12"]
@@ -34,7 +39,7 @@ jobs:
 
       - name: Test with pytest
         run: |
-          pytest -n auto --dist load --cov=./ --cov-report=xml --durations=30
+          pytest -n auto --dist loadscope --cov=./ --cov-report=xml --durations=30
           codecov
 #      - name: Coveralls
 #        env:
