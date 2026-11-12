@@ -26,7 +26,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --upgrade pytest
-          python -m pip install flake8 pytest pytest-cov coveralls pytest-testmon
+          python -m pip install flake8 pytest pytest-cov coveralls pytest-testmon pytest-xdist
           python -m pip install codecov
           pip install -r requirements.txt
           pip install -r test_requirements.txt
@@ -34,7 +34,7 @@ jobs:
 
       - name: Test with pytest
         run: |
-          pytest --cov=./ --cov-report=xml --testmon --durations=30
+          pytest -n auto --dist loadscope --cov=./ --cov-report=xml --durations=30
           codecov
 #      - name: Coveralls
 #        env:
