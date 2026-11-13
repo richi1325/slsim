@@ -48,10 +48,14 @@ def _sed_interpolator_cache_dir():
     return os.path.join(base, "quasar_sed_interpolator")
 
 
-def _sed_interpolator_cache_key(bands, z_min, z_max, Mi_min, Mi_max, n_z, n_mi):
+def _sed_interpolator_cache_key(
+    bands, cosmo, params, z_min, z_max, Mi_min, Mi_max, n_z, n_mi
+):
     """Build a stable cache key for an interpolator grid."""
     payload = (
         tuple(bands),
+        repr(cosmo),
+        repr(params),
         z_min,
         z_max,
         Mi_min,
@@ -529,7 +533,15 @@ class QuasarRate(object):
         ``~/.cache/slsim``) so repeated instances and test runs reuse it.
         """
         cache_key = _sed_interpolator_cache_key(
-            self.qsogen_bands, z_min, z_max, Mi_min, Mi_max, n_z, n_mi
+            self.qsogen_bands,
+            self.cosmo,
+            params_agile,
+            z_min,
+            z_max,
+            Mi_min,
+            Mi_max,
+            n_z,
+            n_mi,
         )
         if cache_key in _SED_INTERPOLATOR_CACHE:
             self._sed_interpolator, self._sed_band_names = _SED_INTERPOLATOR_CACHE[

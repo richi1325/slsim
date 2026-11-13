@@ -577,6 +577,13 @@ def test_sed_interpolator_cache(tmp_path, monkeypatch):
     qr3._build_sed_interpolator(n_z=3, n_mi=2)
     assert len(calls) == 6
 
+    # A different cosmology must not reuse the grid.
+    kwargs_other_cosmo = dict(kwargs)
+    kwargs_other_cosmo["cosmo"] = FlatLambdaCDM(H0=70, Om0=0.4)
+    qr4 = QuasarRate(**kwargs_other_cosmo)
+    qr4._build_sed_interpolator(n_z=3, n_mi=2)
+    assert len(calls) == 12
+
     npt.assert_allclose(
         qr1._sed_interpolator((0.7, -20)),
         qr2._sed_interpolator((0.7, -20)),
