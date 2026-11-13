@@ -1,0 +1,35 @@
+name: Quasar SED cache benchmark
+
+on:
+  push:
+    branches:
+      - perf/quasar-sed-cache
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+          pip install .
+      - name: First run (build cache)
+        env:
+          SLSIM_CACHE_DIR: ${{ github.workspace }}/.cache/slsim
+        run: |
+          /usr/bin/time -f "FIRST_RUN_SECONDS %e" pytest -q \
+            tests/test_Sources/test_SourceCatalogues/test_QuasarCatalog/test_quasar_pop.py::TestQuasarSEDIntegration::test_qsogen_sed_with_interpolator
+      - name: Second run (read cache)
+        env:
+          SLSIM_CACHE_DIR: ${{ github.workspace }}/.cache/slsim
+        run: |
+          /usr/bin/time -f "SECOND_RUN_SECONDS %e" pytest -q \
+            tests/test_Sources/test_SourceCatalogues/test_QuasarCatalog/test_quasar_pop.py::TestQuasarSEDIntegration::test_qsogen_sed_with_interpolator

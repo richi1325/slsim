@@ -7,6 +7,7 @@ from astropy.units import Quantity
 from astropy.table import Table, vstack
 import os
 import warnings
+import hashlib
 from pathlib import Path
 import speclite.filters
 from slsim.Sources.SourceCatalogues.QuasarCatalog.qsogen import Quasar_sed, params_agile
@@ -32,6 +33,34 @@ Oguri & Marshall (2010)
 
 # M_i(z=2) - M_i(z=0) = -2.5 (1 + alpha_nu) log10(3) for alpha_nu = -0.5 (Richards et al. 2006)
 M_I_Z2_MINUS_Z0 = -1.25 * np.log10(3.0)
+
+# Interpolators are immutable, so they can be shared by all QuasarRate
+# instances in a process and persisted between processes.
+_SED_INTERPOLATOR_CACHE = {}
+_SED_INTERPOLATOR_CACHE_VERSION = "v1"
+
+
+def _sed_interpolator_cache_dir():
+    """Return the directory used to persist SED interpolator grids."""
+    base = os.environ.get(
+        "SLSIM_CACHE_DIR", os.path.join(os.path.expanduser("~"), ".cache", "slsim")
+    )
+    return os.path.join(base, "quasar_sed_interpolator")
+
+
+def _sed_interpolator_cache_key(bands, z_min, z_max, Mi_min, Mi_max, n_z, n_mi):
+    """Build a stable cache key for an interpolator grid."""
+    payload = (
+        tuple(bands),
+        z_min,
+        z_max,
+        Mi_min,
+        Mi_max,
+        n_z,
+        n_mi,
+        _SED_INTERPOLATOR_CACHE_VERSION,
+    )
+    return hashlib.sha256(repr(payload).encode()).hexdigest()
 
 
 class QuasarRate(object):
@@ -476,7 +505,9 @@ class QuasarRate(object):
         # Return as a dictionary mapping band name to mag
         return final_mags
 
-    def _build_sed_interpolator(self, z_min=0.05, z_max=6.5, Mi_min=-30, Mi_max=-18):
+    def _build_sed_interpolator(
+        self, z_min=0.05, z_max=6.5, Mi_min=-30, Mi_max=-18, n_z=1000, n_mi=20
+    ):
         """Pre-computes a grid of SED magnitudes to create a fast lookup table.
 
         :param z_min: Minimum redshift for the grid.
@@ -486,45 +517,76 @@ class QuasarRate(object):
         :param Mi_min: Minimum absolute magnitude for the grid.
         :type Mi_min: float
         :param Mi_max: Maximum absolute magnitude for the grid.
-        :type Mi_max: float Instead of generating a spectrum for every
-            source (O(N)), we generate spectra for a grid of (z, M_i)
-            and interpolate.
+        :type Mi_max: float
+        :param n_z: Number of redshift grid points.
+        :type n_z: int
+        :param n_mi: Number of absolute-magnitude grid points.
+        :type n_mi: int
+
+        Instead of generating a spectrum for every source (O(N)), we generate
+        spectra for a grid of (z, M_i) and interpolate. The resulting grid is
+        cached in memory and on disk (under ``SLSIM_CACHE_DIR`` or
+        ``~/.cache/slsim``) so repeated instances and test runs reuse it.
         """
-        # Load filters
-        filters = speclite.filters.load_filters(*self.qsogen_bands)
+        cache_key = _sed_interpolator_cache_key(
+            self.qsogen_bands, z_min, z_max, Mi_min, Mi_max, n_z, n_mi
+        )
+        if cache_key in _SED_INTERPOLATOR_CACHE:
+            self._sed_interpolator, self._sed_band_names = _SED_INTERPOLATOR_CACHE[
+                cache_key
+            ]
+            return
+
         self._sed_band_names = [b.split("-")[1] for b in self.qsogen_bands]
+        cache_path = os.path.join(_sed_interpolator_cache_dir(), cache_key + ".npz")
 
-        # Define grid
-        # Z grid
-        z_grid = np.linspace(z_min, z_max, 1000)
-        # M_i grid
-        mi_grid = np.linspace(Mi_min, Mi_max, 20)
+        try:
+            with np.load(cache_path) as data:
+                z_grid = data["z_grid"]
+                mi_grid = data["mi_grid"]
+                grid_mags = data["grid_mags"]
+        except (OSError, ValueError, KeyError):
+            filters = speclite.filters.load_filters(*self.qsogen_bands)
+            z_grid = np.linspace(z_min, z_max, n_z)
+            mi_grid = np.linspace(Mi_min, Mi_max, n_mi)
+            grid_mags = np.zeros((len(z_grid), len(mi_grid), len(self.qsogen_bands)))
 
-        grid_mags = np.zeros((len(z_grid), len(mi_grid), len(self.qsogen_bands)))
+            # Pre-compute shared wavelength array.
+            # logspace(2.00, ...) covers ~100 Angstroms to IR.
+            wavlen = np.logspace(2.00, 4.48, num=30000, endpoint=True)
 
-        # Pre-compute shared wavelength array
-        # logspace(2.00, ...) covers ~100 Angstroms to IR
-        wavlen = np.logspace(2.00, 4.48, num=30000, endpoint=True)
+            for i, z in enumerate(z_grid):
+                for j, m_i in enumerate(mi_grid):
+                    quasar = Quasar_sed(
+                        z=z,
+                        M_i=m_i,
+                        params=params_agile,
+                        wavlen=wavlen,
+                        cosmo=self.cosmo,
+                    )
+                    mags = filters.get_ab_magnitudes(quasar.flux, quasar.wavred)
+                    for k, band in enumerate(self.qsogen_bands):
+                        grid_mags[i, j, k] = mags[band][0]
 
-        # Loop over grid and compute magnitudes
-        for i, z in enumerate(z_grid):
-            for j, m_i in enumerate(mi_grid):
-                # Generate SED
-                quasar = Quasar_sed(
-                    z=z, M_i=m_i, params=params_agile, wavlen=wavlen, cosmo=self.cosmo
+            try:
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                tmp_path = f"{cache_path}.{os.getpid()}.tmp.npz"
+                np.savez_compressed(
+                    tmp_path,
+                    z_grid=z_grid,
+                    mi_grid=mi_grid,
+                    grid_mags=grid_mags,
                 )
-                flux_sed = quasar.flux
-                wave_sed = quasar.wavred
+                os.replace(tmp_path, cache_path)
+            except OSError:
+                pass
 
-                # Get magnitudes
-                mags = filters.get_ab_magnitudes(flux_sed, wave_sed)
-                # Extract values in order of qsogen_bands
-                for k, band in enumerate(self.qsogen_bands):
-                    grid_mags[i, j, k] = mags[band][0]
-
-        # 2D Interpolator (z, M_i) -> (mag_band1, mag_band2, ...)
         self._sed_interpolator = RegularGridInterpolator(
             (z_grid, mi_grid), grid_mags, bounds_error=False, fill_value=None
+        )
+        _SED_INTERPOLATOR_CACHE[cache_key] = (
+            self._sed_interpolator,
+            self._sed_band_names,
         )
 
     def quasar_sample(self, m_min, m_max, seed=42, host_galaxy=False):

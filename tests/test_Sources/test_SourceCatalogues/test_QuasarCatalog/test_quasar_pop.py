@@ -1,4 +1,5 @@
 from slsim.Sources.SourceCatalogues.QuasarCatalog.quasar_pop import QuasarRate
+import slsim.Sources.SourceCatalogues.QuasarCatalog.quasar_pop as quasar_pop_module
 from astropy.cosmology import FlatLambdaCDM
 from astropy.units import Quantity
 import numpy as np
@@ -534,6 +535,52 @@ class TestQuasarSEDIntegration:
         assert np.any(
             is_extreme | is_nan
         ), "At z>7, colors should be unphysical (extreme or NaN) due to Lyman-limit effects, but they are not. Check warning and SED generation logic."
+
+
+def test_sed_interpolator_cache(tmp_path, monkeypatch):
+    """The SED grid is reused in memory and on disk."""
+    monkeypatch.setenv("SLSIM_CACHE_DIR", str(tmp_path))
+    quasar_pop_module._SED_INTERPOLATOR_CACHE.clear()
+
+    calls = []
+    original_quasar_sed = quasar_pop_module.Quasar_sed
+
+    def counted_quasar_sed(*args, **kwargs):
+        calls.append(1)
+        return original_quasar_sed(*args, **kwargs)
+
+    monkeypatch.setattr(quasar_pop_module, "Quasar_sed", counted_quasar_sed)
+
+    kwargs = dict(
+        redshifts=np.linspace(0.5, 1.0, 3),
+        sky_area=Quantity(0.05, unit="deg2"),
+        noise=False,
+        cosmo=FlatLambdaCDM(H0=70, Om0=0.3),
+        use_qsogen_sed=True,
+        use_sed_interpolator=True,
+        qsogen_bands=["g", "r", "i"],
+    )
+
+    qr1 = QuasarRate(**kwargs)
+    qr1._build_sed_interpolator(n_z=3, n_mi=2)
+    assert len(calls) == 6
+    assert list((tmp_path / "quasar_sed_interpolator").glob("*.npz"))
+
+    # Clear the in-memory cache to exercise the on-disk cache.
+    quasar_pop_module._SED_INTERPOLATOR_CACHE.clear()
+    qr2 = QuasarRate(**kwargs)
+    qr2._build_sed_interpolator(n_z=3, n_mi=2)
+    assert len(calls) == 6
+
+    # A third instance hits the in-memory cache.
+    qr3 = QuasarRate(**kwargs)
+    qr3._build_sed_interpolator(n_z=3, n_mi=2)
+    assert len(calls) == 6
+
+    npt.assert_allclose(
+        qr1._sed_interpolator((0.7, -20)),
+        qr2._sed_interpolator((0.7, -20)),
+    )
 
 
 # Running the tests with pytest
